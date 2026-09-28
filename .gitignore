@@ -25,10 +25,8 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 
-# Data files (large)
-data/raw/*.pbf
-data/raw/*.geojson
-data/raw/*.csv
+# Data files (large / downloaded)
+data/raw/
 
 # Uploads
 backend/uploads/
