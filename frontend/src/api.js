@@ -101,3 +101,18 @@ export async function updateAssignmentStatus(assignmentId, payload) {
   const { data } = await api.patch(`/catchment-studies/assignments/${assignmentId}/status`, payload)
   return data
 }
+
+export async function fetchAssignmentRoads(assignmentId) {
+  const { data } = await api.get(`/catchment-studies/assignments/${assignmentId}/roads`)
+  return data
+}
+
+export async function fetchAssignmentSurveys(assignmentId) {
+  const { data } = await api.get(`/catchment-studies/assignments/${assignmentId}/surveys`)
+  return data
+}
+
+export async function submitLaneSurvey(assignmentId, payload) {
+  const { data } = await api.post(`/catchment-studies/assignments/${assignmentId}/surveys`, payload)
+  return data
+}

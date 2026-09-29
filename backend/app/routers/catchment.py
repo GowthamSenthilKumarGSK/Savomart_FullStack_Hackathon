@@ -29,6 +29,18 @@ class UpdateAssignmentStatus(BaseModel):
     new_status: str
 
 
+class SubmitLaneSurvey(BaseModel):
+    road_id: str
+    user_id: str
+    household_type: str | None = None
+    household_count_range: str | None = None
+    shop_count: int | None = None
+    shop_types: list[str] | None = None
+    road_condition: str | None = None
+    foot_traffic: str | None = None
+    notes: str | None = None
+
+
 @router.post("")
 async def request_catchment_study(body: RequestStudy, db: AsyncSession = Depends(get_db)):
     try:
@@ -382,6 +394,26 @@ async def update_assignment_status(assignment_id: str, body: UpdateAssignmentSta
     if body.new_status not in allowed:
         raise HTTPException(status_code=422, detail=f"Cannot transition from '{a.status}' to '{body.new_status}'")
 
+    if body.new_status == "completed":
+        road_counts = await db.execute(
+            text("""
+                SELECT
+                    (SELECT count(*) FROM osm_roads r
+                     WHERE ST_Intersects(r.geometry, sa.zone_boundary)) AS total_roads,
+                    (SELECT count(*) FROM lane_surveys ls
+                     WHERE ls.assignment_id = sa.id) AS surveyed_roads
+                FROM survey_assignments sa
+                WHERE sa.id = cast(:aid as uuid)
+            """),
+            {"aid": assignment_id},
+        )
+        rc = road_counts.fetchone()
+        if rc.surveyed_roads < rc.total_roads:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cannot complete assignment: {rc.surveyed_roads}/{rc.total_roads} roads surveyed. All roads must be surveyed before marking complete.",
+            )
+
     await db.execute(
         text("UPDATE survey_assignments SET status = :status WHERE id = cast(:aid as uuid)"),
         {"status": body.new_status, "aid": assignment_id},
@@ -410,4 +442,181 @@ async def update_assignment_status(assignment_id: str, body: UpdateAssignmentSta
         "assignment_id": str(a.id),
         "status": body.new_status,
         "study_id": str(a.study_id),
+    }
+
+
+@router.get("/assignments/{assignment_id}/roads")
+async def get_assignment_roads(assignment_id: str, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(assignment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID")
+
+    assignment = await db.execute(
+        text("SELECT id, study_id FROM survey_assignments WHERE id = cast(:aid as uuid)"),
+        {"aid": assignment_id},
+    )
+    a = assignment.fetchone()
+    if not a:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    roads = await db.execute(
+        text("""
+            SELECT r.id, r.name, r.road_type,
+                   ST_AsGeoJSON(r.geometry)::json AS geometry,
+                   ls.id AS survey_id
+            FROM osm_roads r
+            LEFT JOIN lane_surveys ls ON ls.road_id = r.id AND ls.assignment_id = cast(:aid as uuid)
+            WHERE ST_Intersects(r.geometry,
+                (SELECT zone_boundary FROM survey_assignments WHERE id = cast(:aid as uuid)))
+            ORDER BY r.name NULLS LAST
+        """),
+        {"aid": assignment_id},
+    )
+    rows = roads.fetchall()
+
+    return {
+        "assignment_id": assignment_id,
+        "total_roads": len(rows),
+        "surveyed_count": sum(1 for r in rows if r.survey_id),
+        "roads": [
+            {
+                "road_id": str(r.id),
+                "name": r.name or "Unnamed road",
+                "road_type": r.road_type,
+                "geometry": r.geometry,
+                "surveyed": r.survey_id is not None,
+                "survey_id": str(r.survey_id) if r.survey_id else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/assignments/{assignment_id}/surveys")
+async def get_assignment_surveys(assignment_id: str, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(assignment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID")
+
+    surveys = await db.execute(
+        text("""
+            SELECT ls.id, ls.road_id, ls.household_type, ls.household_count_range,
+                   ls.shop_count, ls.shop_types, ls.road_condition, ls.foot_traffic,
+                   ls.notes, ls.submitted_at,
+                   r.name AS road_name, r.road_type
+            FROM lane_surveys ls
+            LEFT JOIN osm_roads r ON ls.road_id = r.id
+            WHERE ls.assignment_id = cast(:aid as uuid)
+            ORDER BY ls.submitted_at DESC
+        """),
+        {"aid": assignment_id},
+    )
+    rows = surveys.fetchall()
+
+    return {
+        "assignment_id": assignment_id,
+        "surveys": [
+            {
+                "survey_id": str(r.id),
+                "road_id": str(r.road_id) if r.road_id else None,
+                "road_name": r.road_name or "Unnamed road",
+                "road_type": r.road_type,
+                "household_type": r.household_type,
+                "household_count_range": r.household_count_range,
+                "shop_count": r.shop_count,
+                "shop_types": r.shop_types,
+                "road_condition": r.road_condition,
+                "foot_traffic": r.foot_traffic,
+                "notes": r.notes,
+                "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/assignments/{assignment_id}/surveys")
+async def submit_lane_survey(assignment_id: str, body: SubmitLaneSurvey, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(assignment_id)
+        uuid.UUID(body.road_id)
+        uuid.UUID(body.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID")
+
+    assignment = await db.execute(
+        text("SELECT id, assigned_to, status FROM survey_assignments WHERE id = cast(:aid as uuid)"),
+        {"aid": assignment_id},
+    )
+    a = assignment.fetchone()
+    if not a:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if a.status != "in_progress":
+        raise HTTPException(status_code=422, detail="Assignment must be in_progress to submit surveys")
+
+    user = await db.execute(
+        text("SELECT id, role FROM users WHERE id = cast(:uid as uuid)"),
+        {"uid": body.user_id},
+    )
+    u = user.fetchone()
+    if not u or u.role != "survey_executive":
+        raise HTTPException(status_code=403, detail="Only a Survey Executive can submit lane surveys")
+    if str(a.assigned_to) != body.user_id:
+        raise HTTPException(status_code=403, detail="Only the assigned executive can submit surveys for this assignment")
+
+    existing = await db.execute(
+        text("SELECT id FROM lane_surveys WHERE assignment_id = cast(:aid as uuid) AND road_id = cast(:rid as uuid)"),
+        {"aid": assignment_id, "rid": body.road_id},
+    )
+    import json
+    now = datetime.now(timezone.utc)
+    shop_types_json = json.dumps(body.shop_types) if body.shop_types else None
+
+    ex = existing.fetchone()
+    if ex:
+        await db.execute(
+            text("""
+                UPDATE lane_surveys SET
+                    household_type = :ht, household_count_range = :hcr,
+                    shop_count = :sc, shop_types = cast(:st as jsonb),
+                    road_condition = :rc, foot_traffic = :ft,
+                    notes = :notes, submitted_at = :now
+                WHERE id = cast(:sid as uuid)
+            """),
+            {
+                "sid": str(ex.id), "ht": body.household_type, "hcr": body.household_count_range,
+                "sc": body.shop_count, "st": shop_types_json,
+                "rc": body.road_condition, "ft": body.foot_traffic,
+                "notes": body.notes, "now": now,
+            },
+        )
+        survey_id = str(ex.id)
+    else:
+        survey_id = str(uuid.uuid4())
+        await db.execute(
+            text("""
+                INSERT INTO lane_surveys (id, assignment_id, road_id, household_type, household_count_range,
+                    shop_count, shop_types, road_condition, foot_traffic, notes, submitted_at)
+                VALUES (cast(:id as uuid), cast(:aid as uuid), cast(:rid as uuid),
+                    :ht, :hcr, :sc, cast(:st as jsonb), :rc, :ft, :notes, :now)
+            """),
+            {
+                "id": survey_id, "aid": assignment_id, "rid": body.road_id,
+                "ht": body.household_type, "hcr": body.household_count_range,
+                "sc": body.shop_count, "st": shop_types_json,
+                "rc": body.road_condition, "ft": body.foot_traffic,
+                "notes": body.notes, "now": now,
+            },
+        )
+
+    await db.commit()
+
+    return {
+        "survey_id": survey_id,
+        "assignment_id": assignment_id,
+        "road_id": body.road_id,
+        "updated": ex is not None,
+        "submitted_at": now.isoformat(),
     }

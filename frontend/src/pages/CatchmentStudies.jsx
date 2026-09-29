@@ -1,9 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { MapContainer, TileLayer, Polygon, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchCatchmentStudies, fetchCatchmentStudy, createZoneAssignment, updateAssignmentStatus } from '../api'
+import {
+  fetchCatchmentStudies, fetchCatchmentStudy, createZoneAssignment,
+  updateAssignmentStatus, fetchAssignmentRoads, submitLaneSurvey,
+} from '../api'
 
 const USERS = {
   survey_manager: { id: '00000000-0000-0000-0000-000000000003', name: 'Meena Krishnan' },
@@ -24,6 +27,12 @@ const ASSIGNMENT_STATUS = {
 }
 
 const ZONE_COLORS = ['#782B90', '#2563EB', '#D97706', '#059669', '#DC2626', '#7C3AED']
+
+const HOUSEHOLD_TYPES = ['apartments', 'individual', 'mixed']
+const HOUSEHOLD_RANGES = ['<20', '20-50', '50-100', '100+']
+const ROAD_CONDITIONS = ['excellent', 'good', 'fair', 'poor']
+const FOOT_TRAFFIC_LEVELS = ['low', 'medium', 'high']
+const SHOP_TYPE_OPTIONS = ['grocery', 'clothing', 'electronics', 'pharmacy', 'restaurant', 'hardware', 'other']
 
 const propertyIcon = new L.Icon({
   iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
@@ -67,19 +76,210 @@ function MapFitBounds({ boundary }) {
   useEffect(() => {
     if (!boundary?.coordinates?.[0]) return
     const coords = boundary.coordinates[0].map(c => [c[1], c[0]])
-    const bounds = L.latLngBounds(coords)
-    map.fitBounds(bounds, { padding: [30, 30] })
+    map.fitBounds(L.latLngBounds(coords), { padding: [30, 30] })
   }, [boundary, map])
   return null
 }
 
 function ZoneDrawer({ onAddPoint, drawing }) {
-  useMapEvents({
-    click(e) {
-      if (drawing) onAddPoint([e.latlng.lat, e.latlng.lng])
-    },
-  })
+  useMapEvents({ click(e) { if (drawing) onAddPoint([e.latlng.lat, e.latlng.lng]) } })
   return null
+}
+
+function LaneSurveyForm({ road, assignmentId, onDone }) {
+  const [form, setForm] = useState({
+    household_type: '', household_count_range: '', shop_count: '',
+    shop_types: [], road_condition: '', foot_traffic: '', notes: '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }))
+  const toggleShopType = (t) => setForm(prev => ({
+    ...prev,
+    shop_types: prev.shop_types.includes(t)
+      ? prev.shop_types.filter(x => x !== t)
+      : [...prev.shop_types, t],
+  }))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      await submitLaneSurvey(assignmentId, {
+        road_id: road.road_id,
+        user_id: USERS.survey_executive.id,
+        household_type: form.household_type || null,
+        household_count_range: form.household_count_range || null,
+        shop_count: form.shop_count ? parseInt(form.shop_count, 10) : null,
+        shop_types: form.shop_types.length ? form.shop_types : null,
+        road_condition: form.road_condition || null,
+        foot_traffic: form.foot_traffic || null,
+        notes: form.notes || null,
+      })
+      if (onDone) onDone()
+    } catch (err) {
+      const detail = err.response?.data?.detail
+      setError(typeof detail === 'string' ? detail : err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const selectCls = "w-full px-2 py-1.5 text-xs border border-gray-200 rounded bg-white focus:border-savo-purple focus:outline-none"
+
+  return (
+    <form onSubmit={handleSubmit} className="bg-white rounded-lg border border-savo-purple/20 p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-bold text-gray-700">{road.name}</h4>
+        <span className="text-[10px] text-gray-400">{road.road_type}</span>
+      </div>
+      {error && <div className="p-1.5 bg-red-50 rounded text-[10px] text-red-600">{error}</div>}
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Household Type</label>
+          <select value={form.household_type} onChange={e => set('household_type', e.target.value)} className={selectCls}>
+            <option value="">Select...</option>
+            {HOUSEHOLD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Household Count</label>
+          <select value={form.household_count_range} onChange={e => set('household_count_range', e.target.value)} className={selectCls}>
+            <option value="">Select...</option>
+            {HOUSEHOLD_RANGES.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Road Condition</label>
+          <select value={form.road_condition} onChange={e => set('road_condition', e.target.value)} className={selectCls}>
+            <option value="">Select...</option>
+            {ROAD_CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Foot Traffic</label>
+          <select value={form.foot_traffic} onChange={e => set('foot_traffic', e.target.value)} className={selectCls}>
+            <option value="">Select...</option>
+            {FOOT_TRAFFIC_LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Shop Count</label>
+          <input type="number" min="0" value={form.shop_count} onChange={e => set('shop_count', e.target.value)}
+            className={selectCls} placeholder="0" />
+        </div>
+      </div>
+
+      <div>
+        <label className="text-[10px] text-gray-500 block mb-1">Shop Types</label>
+        <div className="flex flex-wrap gap-1">
+          {SHOP_TYPE_OPTIONS.map(t => (
+            <button key={t} type="button" onClick={() => toggleShopType(t)}
+              className={`px-2 py-0.5 rounded text-[10px] border transition-colors ${
+                form.shop_types.includes(t)
+                  ? 'bg-savo-purple text-white border-savo-purple'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+              }`}
+            >{t}</button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="text-[10px] text-gray-500 block mb-0.5">Notes</label>
+        <textarea value={form.notes} onChange={e => set('notes', e.target.value)}
+          rows={2} className={selectCls} placeholder="Optional observations..." />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button type="submit" disabled={submitting}
+          className="px-3 py-1.5 bg-savo-purple text-white text-xs font-semibold rounded hover:bg-savo-purple-dark transition-colors disabled:opacity-50">
+          {submitting ? 'Saving...' : road.surveyed ? 'Update Survey' : 'Submit Survey'}
+        </button>
+        <button type="button" onClick={() => onDone && onDone()}
+          className="px-2 py-1.5 text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+      </div>
+    </form>
+  )
+}
+
+function LaneSurveyPanel({ assignment, role, onRefresh }) {
+  const [roads, setRoads] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [surveyingRoadId, setSurveyingRoadId] = useState(null)
+
+  const isSurveyExec = role === 'survey_executive'
+  const canSurvey = isSurveyExec && assignment.status === 'in_progress'
+
+  const loadRoads = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await fetchAssignmentRoads(assignment.assignment_id)
+      setRoads(data)
+    } catch { setRoads(null) }
+    finally { setLoading(false) }
+  }, [assignment.assignment_id])
+
+  useEffect(() => { loadRoads() }, [loadRoads])
+
+  const handleSurveyDone = async () => {
+    setSurveyingRoadId(null)
+    await loadRoads()
+    if (onRefresh) await onRefresh()
+  }
+
+  if (loading) return <p className="text-[10px] text-gray-400 py-2">Loading roads...</p>
+  if (!roads) return null
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-gray-500">
+          Roads: {roads.surveyed_count}/{roads.total_roads} surveyed
+        </span>
+        <div className="w-24 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-savo-purple rounded-full transition-all"
+            style={{ width: `${roads.total_roads ? (roads.surveyed_count / roads.total_roads * 100) : 0}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="max-h-48 overflow-y-auto space-y-1">
+        {roads.roads.map(road => (
+          <div key={road.road_id}>
+            {surveyingRoadId === road.road_id ? (
+              <LaneSurveyForm road={road} assignmentId={assignment.assignment_id} onDone={handleSurveyDone} />
+            ) : (
+              <div className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
+                road.surveyed ? 'bg-emerald-50 border border-emerald-100' : 'bg-gray-50 border border-gray-100'
+              }`}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${road.surveyed ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                  <span className="truncate text-gray-700">{road.name}</span>
+                  <span className="text-[10px] text-gray-400 flex-shrink-0">{road.road_type}</span>
+                </div>
+                {canSurvey && (
+                  <button
+                    onClick={() => setSurveyingRoadId(road.road_id)}
+                    className="text-[10px] font-semibold text-savo-purple hover:text-savo-purple-dark flex-shrink-0 ml-2"
+                  >
+                    {road.surveyed ? 'Edit' : 'Survey'}
+                  </button>
+                )}
+                {!canSurvey && road.surveyed && (
+                  <span className="text-[10px] text-emerald-600 flex-shrink-0 ml-2">Done</span>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function StudyDetail({ study, role, onRefresh }) {
@@ -90,6 +290,7 @@ function StudyDetail({ study, role, onRefresh }) {
   const [assigning, setAssigning] = useState(false)
   const [error, setError] = useState(null)
   const [updatingId, setUpdatingId] = useState(null)
+  const [expandedAssignment, setExpandedAssignment] = useState(null)
 
   const boundaryCoords = study.boundary?.coordinates?.[0]?.map(c => [c[1], c[0]]) || []
   const canAssign = role === 'survey_manager' && ['requested', 'planning', 'in_progress'].includes(study.status)
@@ -99,9 +300,7 @@ function StudyDetail({ study, role, onRefresh }) {
     ? study.assignments?.filter(a => a.assigned_to === USERS.survey_executive.id) || []
     : study.assignments || []
 
-  const handleAddPoint = (pt) => {
-    setZonePoints(prev => [...prev, pt])
-  }
+  const handleAddPoint = (pt) => setZonePoints(prev => [...prev, pt])
 
   const handleAssign = async () => {
     if (zonePoints.length < 3) return
@@ -154,46 +353,24 @@ function StudyDetail({ study, role, onRefresh }) {
 
       {error && <div className="p-2 bg-red-50 rounded text-xs text-red-600">{error}</div>}
 
-      <div className="rounded-lg overflow-hidden border border-gray-200" style={{ height: 320 }}>
+      <div className="rounded-lg overflow-hidden border border-gray-200" style={{ height: 280 }}>
         {boundaryCoords.length > 0 && (
-          <MapContainer
-            center={boundaryCoords[0]}
-            zoom={15}
-            style={{ height: '100%', width: '100%' }}
-            className="z-0"
-          >
-            <TileLayer
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution='&copy; OpenStreetMap'
-            />
+          <MapContainer center={boundaryCoords[0]} zoom={15} style={{ height: '100%', width: '100%' }} className="z-0">
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; OpenStreetMap' />
             <MapFitBounds boundary={study.boundary} />
-            <Polygon
-              positions={boundaryCoords}
-              pathOptions={{ color: '#782B90', weight: 2, fillOpacity: 0.05, dashArray: '6 4' }}
-            />
-            {prop.location && (
-              <Marker position={[prop.location.lat, prop.location.lng]} icon={propertyIcon} />
-            )}
+            <Polygon positions={boundaryCoords} pathOptions={{ color: '#782B90', weight: 2, fillOpacity: 0.05, dashArray: '6 4' }} />
+            {prop.location && <Marker position={[prop.location.lat, prop.location.lng]} icon={propertyIcon} />}
             {study.assignments?.map((a, i) => {
-              const zoneCoords = a.zone_boundary?.coordinates?.[0]?.map(c => [c[1], c[0]]) || []
-              if (!zoneCoords.length) return null
-              return (
-                <Polygon
-                  key={a.assignment_id}
-                  positions={zoneCoords}
-                  pathOptions={{
-                    color: ZONE_COLORS[i % ZONE_COLORS.length],
-                    weight: 2,
-                    fillOpacity: a.status === 'completed' ? 0.3 : 0.15,
-                  }}
-                />
-              )
+              const zc = a.zone_boundary?.coordinates?.[0]?.map(c => [c[1], c[0]]) || []
+              return zc.length ? (
+                <Polygon key={a.assignment_id} positions={zc} pathOptions={{
+                  color: ZONE_COLORS[i % ZONE_COLORS.length], weight: 2,
+                  fillOpacity: a.status === 'completed' ? 0.3 : 0.15,
+                }} />
+              ) : null
             })}
             {zonePoints.length > 0 && (
-              <Polygon
-                positions={zonePoints}
-                pathOptions={{ color: '#DC2626', weight: 2, fillOpacity: 0.1, dashArray: '4 4' }}
-              />
+              <Polygon positions={zonePoints} pathOptions={{ color: '#DC2626', weight: 2, fillOpacity: 0.1, dashArray: '4 4' }} />
             )}
             <ZoneDrawer onAddPoint={handleAddPoint} drawing={drawing} />
           </MapContainer>
@@ -203,38 +380,25 @@ function StudyDetail({ study, role, onRefresh }) {
       {canAssign && (
         <div className="flex items-center gap-2 flex-wrap">
           {!drawing ? (
-            <button
-              onClick={() => { setDrawing(true); setZonePoints([]) }}
-              className="px-3 py-1.5 bg-savo-purple text-white text-xs font-semibold rounded hover:bg-savo-purple-dark transition-colors"
-            >
+            <button onClick={() => { setDrawing(true); setZonePoints([]) }}
+              className="px-3 py-1.5 bg-savo-purple text-white text-xs font-semibold rounded hover:bg-savo-purple-dark transition-colors">
               Draw Zone
             </button>
           ) : (
             <>
               <span className="text-[10px] text-gray-500">Click map to add points ({zonePoints.length} placed)</span>
               {zonePoints.length >= 3 && (
-                <button
-                  onClick={handleAssign}
-                  disabled={assigning}
-                  className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded hover:bg-emerald-700 transition-colors disabled:opacity-50"
-                >
+                <button onClick={handleAssign} disabled={assigning}
+                  className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded hover:bg-emerald-700 transition-colors disabled:opacity-50">
                   {assigning ? 'Assigning...' : `Assign to ${USERS.survey_executive.name}`}
                 </button>
               )}
               {zonePoints.length > 0 && (
-                <button
-                  onClick={() => setZonePoints(prev => prev.slice(0, -1))}
-                  className="px-2 py-1.5 text-xs text-gray-500 hover:text-gray-700"
-                >
-                  Undo
-                </button>
+                <button onClick={() => setZonePoints(prev => prev.slice(0, -1))}
+                  className="px-2 py-1.5 text-xs text-gray-500 hover:text-gray-700">Undo</button>
               )}
-              <button
-                onClick={() => { setDrawing(false); setZonePoints([]) }}
-                className="px-2 py-1.5 text-xs text-red-500 hover:text-red-700"
-              >
-                Cancel
-              </button>
+              <button onClick={() => { setDrawing(false); setZonePoints([]) }}
+                className="px-2 py-1.5 text-xs text-red-500 hover:text-red-700">Cancel</button>
             </>
           )}
         </div>
@@ -253,20 +417,28 @@ function StudyDetail({ study, role, onRefresh }) {
           const as = ASSIGNMENT_STATUS[a.status] || ASSIGNMENT_STATUS.pending
           const nextStatus = a.status === 'pending' ? 'in_progress' : a.status === 'in_progress' ? 'completed' : null
           const canUpdate = (isSurveyExec && a.assigned_to === USERS.survey_executive.id) || role === 'survey_manager'
+          const isExpanded = expandedAssignment === a.assignment_id
 
           return (
             <div key={a.assignment_id} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-              <div className="flex items-center justify-between mb-1">
+              <div
+                className="flex items-center justify-between mb-1 cursor-pointer"
+                onClick={() => setExpandedAssignment(isExpanded ? null : a.assignment_id)}
+              >
                 <div className="flex items-center gap-2">
-                  <div
-                    className="w-3 h-3 rounded-sm"
-                    style={{ backgroundColor: ZONE_COLORS[i % ZONE_COLORS.length] }}
-                  />
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: ZONE_COLORS[i % ZONE_COLORS.length] }} />
                   <span className="text-sm font-medium text-gray-700">{a.executive_name}</span>
                   <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${as.bg} ${as.text}`}>{as.label}</span>
                 </div>
-                <span className="text-[10px] text-gray-400">{a.survey_count} surveys</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-400">{a.survey_count} surveys</span>
+                  <svg className={`w-3 h-3 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
               </div>
+
               {nextStatus && canUpdate && (
                 <button
                   onClick={() => handleStatusUpdate(a.assignment_id, nextStatus)}
@@ -275,6 +447,10 @@ function StudyDetail({ study, role, onRefresh }) {
                 >
                   {updatingId === a.assignment_id ? 'Updating...' : nextStatus === 'in_progress' ? 'Start Survey' : 'Mark Complete'}
                 </button>
+              )}
+
+              {isExpanded && (
+                <LaneSurveyPanel assignment={a} role={role} onRefresh={onRefresh} />
               )}
             </div>
           )
@@ -306,9 +482,7 @@ export default function CatchmentStudies() {
     }
   }, [])
 
-  useEffect(() => {
-    loadStudies()
-  }, [loadStudies])
+  useEffect(() => { loadStudies() }, [loadStudies])
 
   const loadDetail = useCallback(async (studyId) => {
     setDetailLoading(true)
@@ -355,9 +529,7 @@ export default function CatchmentStudies() {
           {!loading && !error && studies.length === 0 && (
             <div className="py-8 text-center">
               <p className="text-sm text-gray-400">No catchment studies yet</p>
-              <p className="text-[10px] text-gray-300 mt-1">
-                BD Managers can request studies from scouted properties
-              </p>
+              <p className="text-[10px] text-gray-300 mt-1">BD Managers can request studies from scouted properties</p>
             </div>
           )}
           {studies.map(s => (
