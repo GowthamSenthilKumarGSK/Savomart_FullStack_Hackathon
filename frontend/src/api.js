@@ -91,3 +91,13 @@ export async function fetchCatchmentStudy(studyId) {
   const { data } = await api.get(`/catchment-studies/${studyId}`)
   return data
 }
+
+export async function createZoneAssignment(studyId, payload) {
+  const { data } = await api.post(`/catchment-studies/${studyId}/assignments`, payload)
+  return data
+}
+
+export async function updateAssignmentStatus(assignmentId, payload) {
+  const { data } = await api.patch(`/catchment-studies/assignments/${assignmentId}/status`, payload)
+  return data
+}
