@@ -435,6 +435,7 @@ async def update_assignment_status(assignment_id: str, body: UpdateAssignmentSta
                 text("UPDATE catchment_studies SET status = 'completed' WHERE id = cast(:sid as uuid)"),
                 {"sid": str(a.study_id)},
             )
+            await _generate_insight(str(a.study_id), db)
 
     await db.commit()
 
@@ -619,4 +620,152 @@ async def submit_lane_survey(assignment_id: str, body: SubmitLaneSurvey, db: Asy
         "road_id": body.road_id,
         "updated": ex is not None,
         "submitted_at": now.isoformat(),
+    }
+
+
+async def _generate_insight(study_id: str, db: AsyncSession):
+    import json as _json
+
+    total_roads_result = await db.execute(
+        text("""
+            SELECT count(*) FROM osm_roads
+            WHERE ST_Intersects(geometry, (SELECT boundary FROM catchment_studies WHERE id = cast(:sid as uuid)))
+        """),
+        {"sid": study_id},
+    )
+    total_roads = total_roads_result.scalar() or 0
+
+    surveys = await db.execute(
+        text("""
+            SELECT ls.household_type, ls.household_count_range, ls.shop_count,
+                   ls.shop_types, ls.road_condition, ls.foot_traffic
+            FROM lane_surveys ls
+            JOIN survey_assignments sa ON ls.assignment_id = sa.id
+            WHERE sa.study_id = cast(:sid as uuid)
+        """),
+        {"sid": study_id},
+    )
+    rows = surveys.fetchall()
+    surveyed = len(rows)
+
+    household_types: dict[str, int] = {}
+    household_ranges: dict[str, int] = {}
+    road_conditions: dict[str, int] = {}
+    foot_traffic: dict[str, int] = {}
+    shop_type_counts: dict[str, int] = {}
+    total_shops = 0
+
+    for r in rows:
+        if r.household_type:
+            household_types[r.household_type] = household_types.get(r.household_type, 0) + 1
+        if r.household_count_range:
+            household_ranges[r.household_count_range] = household_ranges.get(r.household_count_range, 0) + 1
+        if r.road_condition:
+            road_conditions[r.road_condition] = road_conditions.get(r.road_condition, 0) + 1
+        if r.foot_traffic:
+            foot_traffic[r.foot_traffic] = foot_traffic.get(r.foot_traffic, 0) + 1
+        if r.shop_count:
+            total_shops += r.shop_count
+        if r.shop_types:
+            types = r.shop_types if isinstance(r.shop_types, list) else []
+            for t in types:
+                shop_type_counts[t] = shop_type_counts.get(t, 0) + 1
+
+    aggregated = {
+        "household_types": household_types,
+        "household_count_ranges": household_ranges,
+        "road_conditions": road_conditions,
+        "foot_traffic": foot_traffic,
+        "total_shops": total_shops,
+        "shop_type_distribution": shop_type_counts,
+    }
+
+    completion_pct = round((surveyed / total_roads * 100) if total_roads > 0 else 0, 1)
+
+    existing = await db.execute(
+        text("SELECT id FROM catchment_insights WHERE study_id = cast(:sid as uuid)"),
+        {"sid": study_id},
+    )
+    ex = existing.fetchone()
+
+    if ex:
+        await db.execute(
+            text("""
+                UPDATE catchment_insights SET
+                    total_roads_surveyed = :surveyed, total_roads_in_area = :total,
+                    completion_pct = :pct, aggregated_data = cast(:agg as jsonb),
+                    created_at = now()
+                WHERE id = cast(:iid as uuid)
+            """),
+            {"iid": str(ex.id), "surveyed": surveyed, "total": total_roads, "pct": completion_pct, "agg": _json.dumps(aggregated)},
+        )
+    else:
+        insight_id = uuid.uuid4()
+        await db.execute(
+            text("""
+                INSERT INTO catchment_insights (id, study_id, total_roads_surveyed, total_roads_in_area, completion_pct, aggregated_data)
+                VALUES (cast(:id as uuid), cast(:sid as uuid), :surveyed, :total, :pct, cast(:agg as jsonb))
+            """),
+            {"id": str(insight_id), "sid": study_id, "surveyed": surveyed, "total": total_roads, "pct": completion_pct, "agg": _json.dumps(aggregated)},
+        )
+
+
+@router.get("/{study_id}/insight")
+async def get_catchment_insight(study_id: str, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(study_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid study ID")
+
+    study = await db.execute(
+        text("""
+            SELECT cs.id, cs.status, cs.property_id,
+                   p.address AS property_address, p.pincode AS property_pincode
+            FROM catchment_studies cs
+            JOIN properties p ON cs.property_id = p.id
+            WHERE cs.id = cast(:sid as uuid)
+        """),
+        {"sid": study_id},
+    )
+    s = study.fetchone()
+    if not s:
+        raise HTTPException(status_code=404, detail="Catchment study not found")
+
+    insight = await db.execute(
+        text("""
+            SELECT id, total_roads_surveyed, total_roads_in_area, completion_pct,
+                   aggregated_data, ai_narrative, created_at
+            FROM catchment_insights WHERE study_id = cast(:sid as uuid)
+            ORDER BY created_at DESC LIMIT 1
+        """),
+        {"sid": study_id},
+    )
+    row = insight.fetchone()
+    if not row:
+        if s.status == "completed":
+            await _generate_insight(study_id, db)
+            await db.commit()
+            re = await db.execute(
+                text("SELECT id, total_roads_surveyed, total_roads_in_area, completion_pct, aggregated_data, ai_narrative, created_at FROM catchment_insights WHERE study_id = cast(:sid as uuid) ORDER BY created_at DESC LIMIT 1"),
+                {"sid": study_id},
+            )
+            row = re.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No insight generated yet. Study must be completed first.")
+
+    return {
+        "study_id": study_id,
+        "study_status": s.status,
+        "property_id": str(s.property_id),
+        "property_address": s.property_address,
+        "property_pincode": s.property_pincode,
+        "insight": {
+            "id": str(row.id),
+            "total_roads_surveyed": row.total_roads_surveyed,
+            "total_roads_in_area": row.total_roads_in_area,
+            "completion_pct": row.completion_pct,
+            "aggregated_data": row.aggregated_data,
+            "ai_narrative": row.ai_narrative,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        },
     }

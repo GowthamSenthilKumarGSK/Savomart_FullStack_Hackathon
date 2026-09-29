@@ -6,6 +6,7 @@ import 'leaflet/dist/leaflet.css'
 import {
   fetchCatchmentStudies, fetchCatchmentStudy, createZoneAssignment,
   updateAssignmentStatus, fetchAssignmentRoads, submitLaneSurvey,
+  fetchCatchmentInsight,
 } from '../api'
 
 const USERS = {
@@ -282,6 +283,135 @@ function LaneSurveyPanel({ assignment, role, onRefresh }) {
   )
 }
 
+function InsightBar({ label, items, colorMap }) {
+  const total = Object.values(items).reduce((a, b) => a + b, 0)
+  if (!total) return <p className="text-[10px] text-gray-400 italic">No data</p>
+  return (
+    <div>
+      <div className="flex h-4 rounded overflow-hidden mb-1">
+        {Object.entries(items).map(([k, v]) => (
+          <div key={k} style={{ width: `${(v / total) * 100}%`, backgroundColor: colorMap[k] || '#94a3b8' }}
+            title={`${k}: ${v}`} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+        {Object.entries(items).map(([k, v]) => (
+          <span key={k} className="text-[10px] text-gray-600 flex items-center gap-1">
+            <span className="w-2 h-2 rounded-sm inline-block" style={{ backgroundColor: colorMap[k] || '#94a3b8' }} />
+            {k}: {v} ({Math.round(v / total * 100)}%)
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const HOUSEHOLD_COLORS = { apartments: '#782B90', individual: '#2563EB', mixed: '#D97706' }
+const CONDITION_COLORS = { excellent: '#059669', good: '#2563EB', fair: '#D97706', poor: '#DC2626' }
+const TRAFFIC_COLORS = { low: '#94a3b8', medium: '#D97706', high: '#DC2626' }
+
+function CatchmentInsightPanel({ studyId, studyStatus }) {
+  const [insight, setInsight] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (studyStatus !== 'completed') return
+    setLoading(true)
+    fetchCatchmentInsight(studyId)
+      .then(d => setInsight(d))
+      .catch(e => setError(e.response?.data?.detail || e.message))
+      .finally(() => setLoading(false))
+  }, [studyId, studyStatus])
+
+  if (studyStatus !== 'completed') return null
+  if (loading) return <p className="text-[10px] text-gray-400 py-2">Loading insight...</p>
+  if (error) return <div className="p-2 bg-red-50 rounded text-xs text-red-600">{error}</div>
+  if (!insight) return null
+
+  const { insight: ins } = insight
+  const agg = ins.aggregated_data || {}
+
+  return (
+    <div className="bg-gradient-to-br from-savo-purple/5 to-white rounded-lg border border-savo-purple/20 p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-bold text-gray-800">Catchment Insight</h4>
+        <span className="text-[10px] text-gray-400">
+          Generated {ins.created_at ? new Date(ins.created_at).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white rounded-lg p-2.5 border border-gray-100 text-center">
+          <div className="text-lg font-bold text-savo-purple">{ins.total_roads_surveyed}</div>
+          <div className="text-[10px] text-gray-500">Roads Surveyed</div>
+        </div>
+        <div className="bg-white rounded-lg p-2.5 border border-gray-100 text-center">
+          <div className="text-lg font-bold text-savo-purple">{ins.total_roads_in_area}</div>
+          <div className="text-[10px] text-gray-500">Total Roads</div>
+        </div>
+        <div className="bg-white rounded-lg p-2.5 border border-gray-100 text-center">
+          <div className="text-lg font-bold text-savo-purple">{ins.completion_pct}%</div>
+          <div className="text-[10px] text-gray-500">Coverage</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg p-3 border border-gray-100 text-center">
+          <div className="text-2xl font-bold text-savo-purple">{agg.total_shops ?? 0}</div>
+          <div className="text-[10px] text-gray-500">Total Shops</div>
+        </div>
+        <div className="bg-white rounded-lg p-3 border border-gray-100">
+          <div className="text-[10px] font-semibold text-gray-600 mb-1.5">Shop Types</div>
+          {Object.keys(agg.shop_type_distribution || {}).length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {Object.entries(agg.shop_type_distribution).sort((a, b) => b[1] - a[1]).map(([t, c]) => (
+                <span key={t} className="px-1.5 py-0.5 rounded text-[10px] bg-savo-purple/10 text-savo-purple font-medium">
+                  {t} ({c})
+                </span>
+              ))}
+            </div>
+          ) : <p className="text-[10px] text-gray-400 italic">No data</p>}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <div className="text-[10px] font-semibold text-gray-600 mb-1">Household Mix</div>
+          <InsightBar items={agg.household_types || {}} colorMap={HOUSEHOLD_COLORS} />
+        </div>
+        <div>
+          <div className="text-[10px] font-semibold text-gray-600 mb-1">Road Condition</div>
+          <InsightBar items={agg.road_conditions || {}} colorMap={CONDITION_COLORS} />
+        </div>
+        <div>
+          <div className="text-[10px] font-semibold text-gray-600 mb-1">Foot Traffic</div>
+          <InsightBar items={agg.foot_traffic || {}} colorMap={TRAFFIC_COLORS} />
+        </div>
+        <div>
+          <div className="text-[10px] font-semibold text-gray-600 mb-1">Household Count Ranges</div>
+          {Object.keys(agg.household_count_ranges || {}).length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(agg.household_count_ranges).map(([range, count]) => (
+                <div key={range} className="bg-white rounded px-2 py-1 border border-gray-100 text-center">
+                  <div className="text-xs font-bold text-gray-700">{count}</div>
+                  <div className="text-[10px] text-gray-400">{range}</div>
+                </div>
+              ))}
+            </div>
+          ) : <p className="text-[10px] text-gray-400 italic">No data</p>}
+        </div>
+      </div>
+
+      <div className="pt-2 border-t border-gray-100">
+        <div className="flex items-center gap-2 text-[10px] text-gray-400">
+          <span>Property: {insight.property_pincode} — {insight.property_address}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StudyDetail({ study, role, onRefresh }) {
   const ss = STATUS_STYLES[study.status] || STATUS_STYLES.requested
   const prop = study.property || {}
@@ -456,6 +586,8 @@ function StudyDetail({ study, role, onRefresh }) {
           )
         })}
       </div>
+
+      <CatchmentInsightPanel studyId={study.study_id} studyStatus={study.status} />
     </div>
   )
 }

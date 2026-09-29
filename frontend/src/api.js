@@ -116,3 +116,8 @@ export async function submitLaneSurvey(assignmentId, payload) {
   const { data } = await api.post(`/catchment-studies/assignments/${assignmentId}/surveys`, payload)
   return data
 }
+
+export async function fetchCatchmentInsight(studyId) {
+  const { data } = await api.get(`/catchment-studies/${studyId}/insight`)
+  return data
+}
