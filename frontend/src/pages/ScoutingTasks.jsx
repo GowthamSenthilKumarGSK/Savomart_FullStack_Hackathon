@@ -704,7 +704,7 @@ function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty, onTaskRefres
       {studyError && <div className="p-2 bg-red-50 rounded text-xs text-red-600">{studyError}</div>}
 
       <div className="flex gap-2 pt-2 border-t border-gray-100">
-        {task.status === 'in_progress' && (
+        {role === 'bd_executive' && task.status === 'in_progress' && (
           <button
             onClick={onSubmitProperty}
             className="px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-savo-purple hover:bg-savo-purple-dark transition-colors"

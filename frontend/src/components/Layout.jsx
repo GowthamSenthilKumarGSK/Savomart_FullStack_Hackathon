@@ -24,10 +24,10 @@ export default function Layout() {
           </div>
           <nav className="hidden sm:flex items-center gap-1">
             {[
-              { to: '/areas', label: 'Area Intelligence' },
-              { to: '/scouting', label: 'Scouting Tasks' },
-              { to: '/catchment', label: 'Catchment Studies' },
-            ].map(link => (
+              { to: '/areas', label: 'Area Intelligence', roles: ['bd_manager'] },
+              { to: '/scouting', label: 'Scouting Tasks', roles: ['bd_manager', 'bd_executive'] },
+              { to: '/catchment', label: 'Catchment Studies', roles: ['bd_manager', 'bd_executive', 'survey_manager', 'survey_executive'] },
+            ].filter(link => link.roles.includes(role)).map(link => (
               <NavLink
                 key={link.to}
                 to={link.to}
