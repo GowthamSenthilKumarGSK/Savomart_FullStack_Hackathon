@@ -61,3 +61,8 @@ export async function updateScoutingTask(taskId, payload) {
   const { data } = await api.patch(`/scouting-tasks/${taskId}`, payload)
   return data
 }
+
+export async function submitProperty(taskId, payload) {
+  const { data } = await api.post(`/scouting-tasks/${taskId}/property`, payload)
+  return data
+}

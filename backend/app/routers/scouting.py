@@ -39,6 +39,23 @@ class UpdateScoutingTask(BaseModel):
     status: str
 
 
+class SubmitProperty(BaseModel):
+    lat: float
+    lng: float
+    address: str
+    rent_monthly: float | None = None
+    carpet_area_sqft: float | None = None
+    frontage_ft: float | None = None
+    floor: int | None = None
+    building_type: str | None = None
+    contact_name: str | None = None
+    contact_phone: str | None = None
+    photos: list[str] | None = None
+    notes: str | None = None
+    submitted_by: str
+    force: bool = False
+
+
 @router.post("")
 async def create_scouting_task(body: CreateScoutingTask, db: AsyncSession = Depends(get_db)):
     manager = await db.execute(
@@ -219,7 +236,7 @@ async def get_scouting_task(task_id: str, db: AsyncSession = Depends(get_db)):
                    ST_AsGeoJSON(st.hotspot_centroid)::json AS centroid_geojson,
                    st.hotspot_signals, st.status, st.notes,
                    st.created_at, st.updated_at, st.area_report_id,
-                   st.assigned_to, st.assigned_by,
+                   st.assigned_to, st.assigned_by, st.property_id,
                    u_to.name AS executive_name, u_to.email AS executive_email,
                    u_by.name AS manager_name, u_by.email AS manager_email
             FROM scouting_tasks st
@@ -234,7 +251,7 @@ async def get_scouting_task(task_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Scouting task not found")
 
     centroid = r.centroid_geojson
-    return {
+    resp = {
         "task_id": str(r.id),
         "pincode": r.pincode_code,
         "hotspot_rank": r.hotspot_rank,
@@ -250,6 +267,60 @@ async def get_scouting_task(task_id: str, db: AsyncSession = Depends(get_db)):
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
+
+    if r.property_id:
+        prop_result = await db.execute(
+            text("""
+                SELECT p.id, p.address, p.pincode, p.stage, p.rent_monthly,
+                       p.carpet_area_sqft, p.frontage_ft, p.floor, p.building_type,
+                       p.contact_name, p.contact_phone, p.created_at,
+                       ST_Y(p.location::geometry) AS lat, ST_X(p.location::geometry) AS lng
+                FROM properties p WHERE p.id = :pid
+            """),
+            {"pid": r.property_id},
+        )
+        prop = prop_result.fetchone()
+        if prop:
+            resp["property"] = {
+                "id": str(prop.id),
+                "address": prop.address,
+                "pincode": prop.pincode,
+                "stage": prop.stage,
+                "lat": prop.lat,
+                "lng": prop.lng,
+                "rent_monthly": prop.rent_monthly,
+                "carpet_area_sqft": prop.carpet_area_sqft,
+                "frontage_ft": prop.frontage_ft,
+                "floor": prop.floor,
+                "building_type": prop.building_type,
+                "contact_name": prop.contact_name,
+                "contact_phone": prop.contact_phone,
+                "created_at": prop.created_at.isoformat() if prop.created_at else None,
+            }
+
+        history_result = await db.execute(
+            text("""
+                SELECT ph.from_stage, ph.to_stage, ph.notes, ph.created_at,
+                       u.name AS changed_by_name
+                FROM property_history ph
+                LEFT JOIN users u ON ph.changed_by = u.id
+                WHERE ph.property_id = :pid
+                ORDER BY ph.created_at
+            """),
+            {"pid": r.property_id},
+        )
+        resp["timeline"] = [
+            {
+                "from_stage": h.from_stage,
+                "to_stage": h.to_stage,
+                "notes": h.notes,
+                "changed_by": h.changed_by_name,
+                "at": h.created_at.isoformat() if h.created_at else None,
+            }
+            for h in history_result.fetchall()
+        ]
+
+    return resp
 
 
 @router.patch("/{task_id}")
@@ -282,3 +353,153 @@ async def update_scouting_task(task_id: str, body: UpdateScoutingTask, db: Async
     await db.commit()
 
     return {"task_id": task_id, "status": body.status, "updated_at": now.isoformat()}
+
+
+@router.post("/{task_id}/property")
+async def submit_property(task_id: str, body: SubmitProperty, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    result = await db.execute(
+        text("""
+            SELECT st.id, st.status, st.property_id, st.assigned_to, st.assigned_by,
+                   st.pincode_code, st.area_report_id
+            FROM scouting_tasks st
+            WHERE st.id = cast(:tid as uuid)
+        """),
+        {"tid": task_id},
+    )
+    task = result.fetchone()
+    if not task:
+        raise HTTPException(status_code=404, detail="Scouting task not found")
+
+    if task.status != "in_progress":
+        raise HTTPException(status_code=422, detail=f"Task must be in_progress to submit a property (current: {task.status})")
+
+    if task.property_id is not None:
+        raise HTTPException(status_code=409, detail="This scouting task already has a linked property")
+
+    try:
+        submitted_uuid = uuid.UUID(body.submitted_by)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid submitted_by")
+    if submitted_uuid != task.assigned_to:
+        raise HTTPException(status_code=403, detail="Only the assigned executive can submit a property for this task")
+
+    exec_check = await db.execute(
+        text("SELECT role FROM users WHERE id = cast(:uid as uuid)"),
+        {"uid": body.submitted_by},
+    )
+    exec_row = exec_check.fetchone()
+    if not exec_row or exec_row.role != "bd_executive":
+        raise HTTPException(status_code=403, detail="submitted_by must be a BD Executive")
+
+    loc_check = await db.execute(
+        text("""
+            SELECT p.code
+            FROM pincodes p
+            WHERE ST_Intersects(
+                ST_SetSRID(ST_MakePoint(:lng, :lat), 4326),
+                p.geometry
+            ) AND p.code = :pincode
+        """),
+        {"lng": body.lng, "lat": body.lat, "pincode": task.pincode_code},
+    )
+    loc_row = loc_check.fetchone()
+    if not loc_row:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Property location ({body.lat}, {body.lng}) is not within pincode {task.pincode_code}",
+        )
+
+    if body.photos and len(body.photos) > 3:
+        raise HTTPException(status_code=422, detail="Maximum 3 photos allowed")
+
+    if not body.force:
+        nearby = await db.execute(
+            text("""
+                SELECT id, address, stage,
+                       ST_Distance(location::geography, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography) AS dist_m
+                FROM properties
+                WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, 50)
+                ORDER BY dist_m
+                LIMIT 5
+            """),
+            {"lng": body.lng, "lat": body.lat},
+        )
+        nearby_rows = nearby.fetchall()
+        if nearby_rows:
+            duplicates = [
+                {"property_id": str(r.id), "address": r.address, "stage": r.stage, "distance_m": round(r.dist_m, 1)}
+                for r in nearby_rows
+            ]
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "Nearby properties found within 50m", "duplicates": duplicates},
+            )
+
+    property_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+
+    await db.execute(
+        text("""
+            INSERT INTO properties
+                (id, area_report_id, location, address, pincode,
+                 rent_monthly, carpet_area_sqft, frontage_ft, floor, building_type,
+                 contact_name, contact_phone, photos, stage, created_by, created_at, updated_at)
+            VALUES
+                (:id, :area_report_id, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326),
+                 :address, :pincode,
+                 :rent, :carpet, :frontage, :floor, :building_type,
+                 :contact_name, :contact_phone, :photos, 'scouted',
+                 cast(:created_by as uuid), :now, :now)
+        """),
+        {
+            "id": property_id,
+            "area_report_id": task.area_report_id,
+            "lng": body.lng, "lat": body.lat,
+            "address": body.address,
+            "pincode": task.pincode_code,
+            "rent": body.rent_monthly,
+            "carpet": body.carpet_area_sqft,
+            "frontage": body.frontage_ft,
+            "floor": body.floor,
+            "building_type": body.building_type,
+            "contact_name": body.contact_name,
+            "contact_phone": body.contact_phone,
+            "photos": body.photos,
+            "created_by": body.submitted_by,
+            "now": now,
+        },
+    )
+
+    history_id = uuid.uuid4()
+    await db.execute(
+        text("""
+            INSERT INTO property_history (id, property_id, from_stage, to_stage, changed_by, notes, created_at)
+            VALUES (:id, :pid, 'new', 'scouted', cast(:uid as uuid), :notes, :now)
+        """),
+        {"id": history_id, "pid": property_id, "uid": body.submitted_by, "notes": body.notes, "now": now},
+    )
+
+    await db.execute(
+        text("""
+            UPDATE scouting_tasks
+            SET property_id = :pid, status = 'completed', updated_at = :now
+            WHERE id = cast(:tid as uuid)
+        """),
+        {"pid": property_id, "tid": task_id, "now": now},
+    )
+
+    await db.commit()
+
+    return {
+        "property_id": str(property_id),
+        "task_id": task_id,
+        "task_status": "completed",
+        "pincode": task.pincode_code,
+        "stage": "scouted",
+        "created_at": now.isoformat(),
+    }
