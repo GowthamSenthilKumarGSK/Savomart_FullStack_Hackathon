@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -8,6 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scouting-tasks", tags=["scouting"])
 
@@ -495,11 +498,33 @@ async def submit_property(task_id: str, body: SubmitProperty, db: AsyncSession =
 
     await db.commit()
 
+    evaluation_id = None
+    try:
+        from app.routers.evaluation import run_evaluation
+        hotspot_context = {
+            "hotspot_score": task.hotspot_score if hasattr(task, "hotspot_score") else None,
+        }
+        task_signals = await db.execute(
+            text("SELECT hotspot_score, hotspot_signals FROM scouting_tasks WHERE id = cast(:tid as uuid)"),
+            {"tid": task_id},
+        )
+        ts_row = task_signals.fetchone()
+        if ts_row:
+            hotspot_context = {
+                "hotspot_score": ts_row.hotspot_score,
+                "hotspot_signals": ts_row.hotspot_signals,
+            }
+        eval_result = await run_evaluation(db, str(property_id), hotspot_context)
+        evaluation_id = eval_result.get("evaluation_id")
+    except Exception:
+        logger.exception("Property evaluation failed for property %s (non-fatal)", property_id)
+
     return {
         "property_id": str(property_id),
         "task_id": task_id,
         "task_status": "completed",
         "pincode": task.pincode_code,
         "stage": "scouted",
+        "evaluation_id": evaluation_id,
         "created_at": now.isoformat(),
     }

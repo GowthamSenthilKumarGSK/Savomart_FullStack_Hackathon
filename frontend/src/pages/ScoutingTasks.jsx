@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchScoutingTasks, fetchScoutingTask, updateScoutingTask, submitProperty } from '../api'
+import { fetchScoutingTasks, fetchScoutingTask, updateScoutingTask, submitProperty, getEvaluation, runEvaluation } from '../api'
 
 const USERS = {
   bd_manager: { id: '00000000-0000-0000-0000-000000000001', name: 'Priya Sharma' },
@@ -337,6 +337,196 @@ function TaskCard({ task, onSelect, isSelected }) {
   )
 }
 
+const GRADE_COLORS = {
+  A: { bg: 'bg-emerald-100', text: 'text-emerald-700', bar: 'bg-emerald-500' },
+  B: { bg: 'bg-blue-100', text: 'text-blue-700', bar: 'bg-blue-500' },
+  C: { bg: 'bg-amber-100', text: 'text-amber-700', bar: 'bg-amber-500' },
+  D: { bg: 'bg-orange-100', text: 'text-orange-700', bar: 'bg-orange-500' },
+  F: { bg: 'bg-red-100', text: 'text-red-700', bar: 'bg-red-500' },
+}
+
+const DIMENSION_LABELS = {
+  residential_catchment_proxies: 'Residential & Catchment Proxies',
+  commercial_context: 'Commercial Context',
+  accessibility: 'Accessibility',
+  savomart_fit: 'Savomart Fit',
+  property_attributes: 'Property Attributes',
+}
+
+const METRIC_TYPE_BADGE = {
+  direct: { bg: 'bg-blue-50', text: 'text-blue-600', label: 'Direct' },
+  derived: { bg: 'bg-purple-50', text: 'text-purple-600', label: 'Derived' },
+  proxy: { bg: 'bg-amber-50', text: 'text-amber-600', label: 'Proxy' },
+}
+
+function EvaluationCard({ propertyId }) {
+  const [evaluation, setEvaluation] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [running, setRunning] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    if (!propertyId) return
+    setLoading(true)
+    getEvaluation(propertyId)
+      .then(setEvaluation)
+      .catch(() => setEvaluation(null))
+      .finally(() => setLoading(false))
+  }, [propertyId])
+
+  const handleRunEvaluation = async () => {
+    setRunning(true)
+    setError(null)
+    try {
+      const result = await runEvaluation(propertyId)
+      setEvaluation(result)
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Evaluation could not be completed')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+        <div className="text-[10px] text-gray-400 uppercase tracking-wider">Property Evaluation</div>
+        <p className="text-xs text-gray-400 mt-2">Loading evaluation...</p>
+      </div>
+    )
+  }
+
+  if (!evaluation) {
+    return (
+      <div className="bg-gray-50 rounded-lg p-3 border border-gray-100 space-y-2">
+        <div className="text-[10px] text-gray-400 uppercase tracking-wider">Property Evaluation</div>
+        <p className="text-xs text-gray-500">Evaluation not yet available.</p>
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        <button
+          onClick={handleRunEvaluation}
+          disabled={running}
+          className="px-3 py-1 rounded text-xs font-medium bg-savo-purple text-white hover:bg-savo-purple-dark disabled:opacity-50"
+        >
+          {running ? 'Running...' : 'Run Evaluation'}
+        </button>
+      </div>
+    )
+  }
+
+  const gc = GRADE_COLORS[evaluation.grade] || GRADE_COLORS.C
+  const subScores = evaluation.sub_scores || {}
+  const rawData = evaluation.raw_data || {}
+
+  return (
+    <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] text-indigo-600 uppercase tracking-wider font-semibold">Property Evaluation</div>
+        <button onClick={() => setExpanded(!expanded)} className="text-[10px] text-indigo-400 hover:text-indigo-600">
+          {expanded ? 'Collapse' : 'Details'}
+        </button>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <div className="text-3xl font-bold text-gray-800">{evaluation.overall_score}</div>
+        <div>
+          <span className={`px-2 py-0.5 rounded text-xs font-bold ${gc.bg} ${gc.text}`}>Grade {evaluation.grade}</span>
+          <span className="text-[10px] text-gray-400 ml-2">/ 100</span>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        {Object.entries(subScores).map(([key, dim]) => {
+          const dgc = GRADE_COLORS[dim.grade] || GRADE_COLORS.C
+          return (
+            <div key={key}>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-gray-600">{DIMENSION_LABELS[key] || key}</span>
+                <span className="text-[10px] font-semibold text-gray-700">{dim.score}</span>
+              </div>
+              <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${dgc.bar}`} style={{ width: `${dim.score}%` }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {rawData.positive_signals && rawData.positive_signals.length > 0 && (
+        <div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Positive Signals</div>
+          <div className="flex flex-wrap gap-1">
+            {rawData.positive_signals.map((s, i) => (
+              <span key={i} className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded text-[10px]">{s}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {rawData.risks && rawData.risks.length > 0 && (
+        <div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Risks & Concerns</div>
+          <div className="flex flex-wrap gap-1">
+            {rawData.risks.map((r, i) => (
+              <span key={i} className="px-1.5 py-0.5 bg-red-50 text-red-600 rounded text-[10px]">{r}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {rawData.recommendation && (
+        <div className="bg-white rounded p-2 border border-indigo-100">
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-0.5">Recommendation</div>
+          <p className="text-xs text-gray-700">{rawData.recommendation}</p>
+        </div>
+      )}
+
+      {rawData.field_derived?.rent_per_sqft != null && (
+        <div className="text-xs text-gray-500">
+          Rent per sq ft: <span className="font-semibold text-gray-700">₹{rawData.field_derived.rent_per_sqft}</span>/mo
+          <span className="text-[10px] text-gray-400 ml-1">(field-derived, not scored)</span>
+        </div>
+      )}
+
+      {expanded && (
+        <div className="space-y-3 pt-2 border-t border-indigo-100">
+          {Object.entries(subScores).map(([key, dim]) => (
+            <div key={key}>
+              <div className="text-[10px] font-semibold text-gray-600 mb-1">{DIMENSION_LABELS[key] || key}</div>
+              <div className="space-y-0.5">
+                {dim.metrics && Object.entries(dim.metrics).map(([mk, mv]) => {
+                  const tb = METRIC_TYPE_BADGE[mv.type] || METRIC_TYPE_BADGE.direct
+                  return (
+                    <div key={mk} className="flex items-center justify-between text-[10px]">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-gray-500">{mk.replace(/_/g, ' ')}</span>
+                        <span className={`px-1 rounded ${tb.bg} ${tb.text}`}>{tb.label}</span>
+                        {mv.missing && <span className="px-1 rounded bg-yellow-50 text-yellow-600">Missing</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-400">{mv.value != null ? mv.value : '—'}</span>
+                        <span className="font-semibold text-gray-700 w-6 text-right">{mv.normalized}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+
+          {rawData.scoring_notes && (
+            <div className="text-[9px] text-gray-400 space-y-0.5 pt-1 border-t border-indigo-50">
+              {Object.entries(rawData.scoring_notes).map(([k, v]) => (
+                <p key={k}>{v}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty }) {
   const [updating, setUpdating] = useState(false)
   const ss = STATUS_STYLES[task.status] || STATUS_STYLES.assigned
@@ -462,6 +652,8 @@ function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty }) {
           </div>
         </div>
       )}
+
+      {task.property && <EvaluationCard propertyId={task.property.id} />}
 
       {task.timeline && task.timeline.length > 0 && (
         <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">

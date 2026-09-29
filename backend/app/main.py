@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import pincodes, stores, fitness, hotspots, scouting
+from app.routers import pincodes, stores, fitness, hotspots, scouting, evaluation
 
 app = FastAPI(title="Savo SiteScout", version="0.1.0")
 
@@ -18,6 +18,7 @@ app.include_router(stores.router)
 app.include_router(fitness.router)
 app.include_router(hotspots.router)
 app.include_router(scouting.router)
+app.include_router(evaluation.router)
 
 
 @app.get("/api/health")

@@ -66,3 +66,13 @@ export async function submitProperty(taskId, payload) {
   const { data } = await api.post(`/scouting-tasks/${taskId}/property`, payload)
   return data
 }
+
+export async function getEvaluation(propertyId) {
+  const { data } = await api.get(`/properties/${propertyId}/evaluation`)
+  return data
+}
+
+export async function runEvaluation(propertyId) {
+  const { data } = await api.post(`/properties/${propertyId}/evaluate`)
+  return data
+}
