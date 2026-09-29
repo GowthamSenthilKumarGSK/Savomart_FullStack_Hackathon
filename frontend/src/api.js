@@ -41,3 +41,23 @@ export async function fetchSavedReport(pincode, reportId) {
   const { data } = await api.get(`/pincodes/${pincode}/fitness/${reportId}`)
   return data
 }
+
+export async function createScoutingTask(payload) {
+  const { data } = await api.post('/scouting-tasks', payload)
+  return data
+}
+
+export async function fetchScoutingTasks(params = {}) {
+  const { data } = await api.get('/scouting-tasks', { params })
+  return data
+}
+
+export async function fetchScoutingTask(taskId) {
+  const { data } = await api.get(`/scouting-tasks/${taskId}`)
+  return data
+}
+
+export async function updateScoutingTask(taskId, payload) {
+  const { data } = await api.patch(`/scouting-tasks/${taskId}`, payload)
+  return data
+}

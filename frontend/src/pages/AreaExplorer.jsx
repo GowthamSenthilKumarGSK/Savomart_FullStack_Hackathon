@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { MapContainer, TileLayer, GeoJSON, Marker, Popup, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchPincodeBoundaries, fetchPincodeDetail, fetchStores, fetchFitnessReport, fetchHotspots, fetchExplanation, fetchFitnessHistory, fetchSavedReport } from '../api'
+import { fetchPincodeBoundaries, fetchPincodeDetail, fetchStores, fetchFitnessReport, fetchHotspots, fetchExplanation, fetchFitnessHistory, fetchSavedReport, createScoutingTask } from '../api'
 
 delete L.Icon.Default.prototype._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -90,7 +91,7 @@ const TYPE_BADGE = {
 function FlyTo({ center, zoom }) {
   const map = useMap()
   useEffect(() => {
-    if (center) map.flyTo(center, zoom || 14, { duration: 0.8 })
+    if (center && !isNaN(center[0]) && !isNaN(center[1])) map.flyTo(center, zoom || 14, { duration: 0.8 })
   }, [center, zoom, map])
   return null
 }
@@ -586,12 +587,12 @@ function CompareReports({ reportA, reportB, onClose }) {
   )
 }
 
-function HotspotCard({ hotspot, active, onClick }) {
+function HotspotCard({ hotspot, active, onClick, role, onAssign, assigning }) {
   const color = HOTSPOT_COLORS[hotspot.rank - 1] || '#782B90'
   return (
-    <button
+    <div
       onClick={onClick}
-      className={`w-full text-left rounded-lg border p-3 transition-all ${
+      className={`w-full text-left rounded-lg border p-3 transition-all cursor-pointer ${
         active ? 'border-gray-400 bg-gray-50 shadow-sm' : 'border-gray-150 hover:border-gray-300 hover:bg-gray-50/50'
       }`}
     >
@@ -620,11 +621,22 @@ function HotspotCard({ hotspot, active, onClick }) {
         <span>Grocery: {hotspot.signals.nearest_grocery_competitor_m}m</span>
         {hotspot.signals.has_major_road && <span className="text-amber-600 font-medium">Major road</span>}
       </div>
-    </button>
+      {role === 'bd_manager' && onAssign && (
+        <div className="mt-2 pt-2 border-t border-gray-100" onClick={e => e.stopPropagation()}>
+          <button
+            onClick={() => onAssign(hotspot)}
+            disabled={assigning}
+            className="w-full px-2 py-1.5 rounded-md bg-savo-purple text-white text-[11px] font-medium hover:bg-savo-purple-dark transition-colors disabled:opacity-50"
+          >
+            {assigning ? 'Assigning...' : 'Assign to Scout'}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
-function HotspotPanel({ data, loading, error, onRetry, activeHotspot, onSelectHotspot }) {
+function HotspotPanel({ data, loading, error, onRetry, activeHotspot, onSelectHotspot, role, onAssign, assigningHotspot }) {
   if (loading) {
     return (
       <div className="py-5 text-center">
@@ -670,6 +682,9 @@ function HotspotPanel({ data, loading, error, onRetry, activeHotspot, onSelectHo
             hotspot={h}
             active={activeHotspot === h.cell_id}
             onClick={() => onSelectHotspot(activeHotspot === h.cell_id ? null : h.cell_id)}
+            role={role}
+            onAssign={onAssign}
+            assigning={assigningHotspot === h.cell_id}
           />
         ))}
       </div>
@@ -701,7 +716,7 @@ function HotspotMapOverlay({ data, activeHotspot, onSelectHotspot }) {
   )
 }
 
-function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoading, fitnessError, hotspots, hotspotsLoading, hotspotsError, onFindHotspots, activeHotspot, onSelectHotspot, explanation, explanationLoading, explanationError, explanationUnavailable, onGenerateExplanation, history, historyLoading, historyError, onOpenReport, compareMode, compareSelection, onToggleCompare, onCompare, compareData, compareLoading, onCloseCompare }) {
+function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoading, fitnessError, hotspots, hotspotsLoading, hotspotsError, onFindHotspots, activeHotspot, onSelectHotspot, explanation, explanationLoading, explanationError, explanationUnavailable, onGenerateExplanation, history, historyLoading, historyError, onOpenReport, compareMode, compareSelection, onToggleCompare, onCompare, compareData, compareLoading, onCloseCompare, role, onAssignHotspot, assigningHotspot }) {
   if (loading) {
     return (
       <div className="p-5">
@@ -814,6 +829,9 @@ function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoad
         onRetry={onFindHotspots}
         activeHotspot={activeHotspot}
         onSelectHotspot={onSelectHotspot}
+        role={role}
+        onAssign={onAssignHotspot}
+        assigningHotspot={assigningHotspot}
       />
 
       {compareData && (
@@ -871,7 +889,13 @@ function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoad
   )
 }
 
+const DEMO_USERS = {
+  bd_manager: '00000000-0000-0000-0000-000000000001',
+  bd_executive: '00000000-0000-0000-0000-000000000002',
+}
+
 export default function AreaExplorer() {
+  const { role } = useOutletContext()
   const [boundaries, setBoundaries] = useState(null)
   const [stores, setStores] = useState(null)
   const [selected, setSelected] = useState(null)
@@ -899,6 +923,7 @@ export default function AreaExplorer() {
   const [compareData, setCompareData] = useState(null)
   const [compareLoading, setCompareLoading] = useState(false)
   const [viewingReport, setViewingReport] = useState(false)
+  const [assigningHotspot, setAssigningHotspot] = useState(null)
   const geoJsonRef = useRef(null)
 
   useEffect(() => {
@@ -1057,6 +1082,30 @@ export default function AreaExplorer() {
     }
   }, [selected])
 
+  const assignHotspot = useCallback(async (hotspot) => {
+    if (!selected || !fitness || assigningHotspot) return
+    setAssigningHotspot(hotspot.cell_id)
+    try {
+      await createScoutingTask({
+        pincode: selected,
+        area_report_id: fitness.report_id || null,
+        hotspot_rank: hotspot.rank,
+        hotspot_geometry: hotspot.geometry,
+        hotspot_centroid: hotspot.centroid,
+        hotspot_score: hotspot.hotspot_score,
+        hotspot_signals: { sub_scores: hotspot.sub_scores, signals: hotspot.signals },
+        assigned_to: DEMO_USERS.bd_executive,
+        assigned_by: DEMO_USERS.bd_manager,
+        notes: `Scouting hotspot #${hotspot.rank} in ${selected}`,
+      })
+      alert(`Hotspot #${hotspot.rank} assigned to Arjun Patel for scouting`)
+    } catch (err) {
+      alert(`Assignment failed: ${err.response?.data?.detail || err.message}`)
+    } finally {
+      setAssigningHotspot(null)
+    }
+  }, [selected, fitness, assigningHotspot])
+
   const clearSelection = useCallback(() => {
     setSelected(null)
     setDetail(null)
@@ -1183,6 +1232,9 @@ export default function AreaExplorer() {
               compareData={compareData}
               compareLoading={compareLoading}
               onCloseCompare={() => setCompareData(null)}
+              role={role}
+              onAssignHotspot={assignHotspot}
+              assigningHotspot={assigningHotspot}
             />
           ) : (
             <div className="p-5 text-center">

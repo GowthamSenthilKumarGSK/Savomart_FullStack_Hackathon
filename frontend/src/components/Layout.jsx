@@ -23,18 +23,24 @@ export default function Layout() {
             <span className="text-white font-semibold text-sm tracking-wide">SiteScout</span>
           </div>
           <nav className="hidden sm:flex items-center gap-1">
-            <NavLink
-              to="/areas"
-              className={({ isActive }) =>
-                `px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  isActive
-                    ? 'bg-white/20 text-white'
-                    : 'text-white/70 hover:text-white hover:bg-white/10'
-                }`
-              }
-            >
-              Area Intelligence
-            </NavLink>
+            {[
+              { to: '/areas', label: 'Area Intelligence' },
+              { to: '/scouting', label: 'Scouting Tasks' },
+            ].map(link => (
+              <NavLink
+                key={link.to}
+                to={link.to}
+                className={({ isActive }) =>
+                  `px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                    isActive
+                      ? 'bg-white/20 text-white'
+                      : 'text-white/70 hover:text-white hover:bg-white/10'
+                  }`
+                }
+              >
+                {link.label}
+              </NavLink>
+            ))}
           </nav>
         </div>
         <div className="flex items-center gap-2">
