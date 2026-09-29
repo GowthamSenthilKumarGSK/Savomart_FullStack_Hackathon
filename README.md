@@ -648,7 +648,7 @@ This project was developed with the assistance of **Claude Code** (Anthropic's A
 
 ## Demo Video
 
-*[Link to be added]*
+https://www.loom.com/share/1d4253f5e80d40a88f08dd0746bcd620
 
 ---
 
