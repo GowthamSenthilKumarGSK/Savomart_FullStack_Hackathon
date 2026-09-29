@@ -200,8 +200,97 @@ async def get_fitness(pincode: str, db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/{pincode}/fitness/history")
+async def get_fitness_history(pincode: str, db: AsyncSession = Depends(get_db)):
+    check = await db.execute(
+        text("SELECT code FROM pincodes WHERE code = :code"),
+        {"code": pincode},
+    )
+    if not check.fetchone():
+        raise HTTPException(status_code=404, detail=f"Pincode {pincode} not found")
+
+    result = await db.execute(
+        text("""
+            SELECT ar.id, ar.overall_score, ar.sub_scores, ar.created_at,
+                   ar.ai_narrative IS NOT NULL as has_explanation
+            FROM area_reports ar
+            JOIN areas a ON ar.area_id = a.id
+            JOIN pincodes p ON a.pincode_id = p.id
+            WHERE p.code = :code AND ar.status = 'completed'
+            ORDER BY ar.created_at DESC
+        """),
+        {"code": pincode},
+    )
+    rows = result.fetchall()
+
+    from app.scoring import GRADES
+    reports = []
+    for r in rows:
+        grade = next((g for threshold, g in GRADES if (r.overall_score or 0) >= threshold), "F")
+        reports.append({
+            "report_id": str(r.id),
+            "overall_score": r.overall_score,
+            "grade": grade,
+            "sub_scores": r.sub_scores,
+            "generated_at": r.created_at.isoformat() if r.created_at else None,
+            "has_explanation": bool(r.has_explanation),
+        })
+
+    return {"pincode": pincode, "reports": reports}
+
+
+@router.get("/{pincode}/fitness/{report_id}")
+async def get_fitness_report(pincode: str, report_id: str, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(report_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid report ID")
+    result = await db.execute(
+        text("""
+            SELECT ar.id, ar.overall_score, ar.sub_scores, ar.raw_data, ar.data_sources,
+                   ar.ai_narrative, ar.created_at, p.code, p.name
+            FROM area_reports ar
+            JOIN areas a ON ar.area_id = a.id
+            JOIN pincodes p ON a.pincode_id = p.id
+            WHERE ar.id = cast(:report_id as uuid) AND p.code = :pincode AND ar.status = 'completed'
+        """),
+        {"report_id": report_id, "pincode": pincode},
+    )
+    r = result.fetchone()
+    if not r:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    from app.scoring import GRADES, WEIGHTS
+    grade = next((g for threshold, g in GRADES if (r.overall_score or 0) >= threshold), "F")
+
+    explanation = None
+    if r.ai_narrative:
+        try:
+            explanation = json.loads(r.ai_narrative)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return {
+        "report_id": str(r.id),
+        "pincode": r.code,
+        "name": r.name,
+        "generated_at": r.created_at.isoformat() if r.created_at else None,
+        "overall_score": r.overall_score,
+        "grade": grade,
+        "sub_scores": r.sub_scores,
+        "raw_data": r.raw_data,
+        "weights": WEIGHTS,
+        "data_sources": r.data_sources or DATA_SOURCES,
+        "explanation": explanation,
+    }
+
+
 @router.post("/{pincode}/fitness/{report_id}/explain")
 async def explain_fitness(pincode: str, report_id: str, db: AsyncSession = Depends(get_db)):
+    try:
+        uuid.UUID(report_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid report ID")
     row = await db.execute(
         text("""
             SELECT ar.overall_score, ar.sub_scores, ar.raw_data, ar.data_sources, ar.ai_narrative,

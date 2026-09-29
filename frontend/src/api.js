@@ -31,3 +31,13 @@ export async function fetchExplanation(pincode, reportId) {
   const { data } = await api.post(`/pincodes/${pincode}/fitness/${reportId}/explain`)
   return data
 }
+
+export async function fetchFitnessHistory(pincode) {
+  const { data } = await api.get(`/pincodes/${pincode}/fitness/history`)
+  return data
+}
+
+export async function fetchSavedReport(pincode, reportId) {
+  const { data } = await api.get(`/pincodes/${pincode}/fitness/${reportId}`)
+  return data
+}

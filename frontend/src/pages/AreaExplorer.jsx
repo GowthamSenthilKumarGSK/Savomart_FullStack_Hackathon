@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { MapContainer, TileLayer, GeoJSON, Marker, Popup, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchPincodeBoundaries, fetchPincodeDetail, fetchStores, fetchFitnessReport, fetchHotspots, fetchExplanation } from '../api'
+import { fetchPincodeBoundaries, fetchPincodeDetail, fetchStores, fetchFitnessReport, fetchHotspots, fetchExplanation, fetchFitnessHistory, fetchSavedReport } from '../api'
 
 delete L.Icon.Default.prototype._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -418,6 +418,174 @@ function FitnessReport({ report, explanation, explanationLoading, explanationErr
   )
 }
 
+function ReportHistory({ reports, loading, error, onSelect, onCompare, compareMode, compareSelection, onToggleCompare }) {
+  if (loading) {
+    return (
+      <div className="py-3 text-center">
+        <div className="relative w-6 h-6 mx-auto">
+          <div className="w-6 h-6 border-2 border-gray-200 rounded-full" />
+          <div className="w-6 h-6 border-2 border-savo-purple border-t-transparent rounded-full animate-spin absolute inset-0" />
+        </div>
+        <p className="text-[10px] text-gray-400 mt-1.5">Loading history...</p>
+      </div>
+    )
+  }
+  if (error) {
+    return <div className="p-2 bg-red-50 rounded text-xs text-red-600">{error}</div>
+  }
+  if (!reports || reports.length === 0) {
+    return <div className="text-xs text-gray-400 text-center py-2">No previous reports</div>
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Report History</h4>
+        {reports.length >= 2 && (
+          <button
+            onClick={onToggleCompare}
+            className={`text-[10px] font-medium ${compareMode ? 'text-red-500 hover:text-red-600' : 'text-savo-purple hover:text-savo-purple-dark'}`}
+          >
+            {compareMode ? 'Cancel Compare' : 'Compare'}
+          </button>
+        )}
+      </div>
+      {compareMode && (
+        <div className="text-[10px] text-gray-500 bg-gray-50 rounded px-2 py-1 border border-gray-100">
+          Select 2 reports to compare ({compareSelection.length}/2 selected)
+          {compareSelection.length === 2 && (
+            <button onClick={onCompare} className="ml-2 text-savo-purple font-semibold hover:underline">
+              View Comparison
+            </button>
+          )}
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {reports.map(r => {
+          const gc = GRADE_COLORS[r.grade] || GRADE_COLORS.C
+          const ts = new Date(r.generated_at)
+          const isSelected = compareSelection.includes(r.report_id)
+          const dims = [
+            { key: 'market_opportunity', short: 'Mkt' },
+            { key: 'commercial_vitality', short: 'Com' },
+            { key: 'accessibility', short: 'Acc' },
+          ]
+          return (
+            <button
+              key={r.report_id}
+              onClick={() => compareMode
+                ? onToggleCompare(r.report_id)
+                : onSelect(r.report_id)
+              }
+              className={`w-full text-left rounded-lg border p-2 transition-all text-xs ${
+                isSelected ? 'border-savo-purple bg-savo-purple/5' : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {compareMode && (
+                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 ${
+                    isSelected ? 'border-savo-purple bg-savo-purple' : 'border-gray-300'
+                  }`}>
+                    {isSelected && <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`font-bold tabular-nums text-sm ${gc.text}`}>{r.overall_score}</span>
+                      <span className={`px-1 py-0.5 rounded text-[9px] font-semibold text-white ${gc.bg}`}>{r.grade}</span>
+                      <span className="text-[9px] text-gray-400 font-medium">Fitness snapshot</span>
+                    </div>
+                    <span className="text-[9px] text-gray-400 tabular-nums flex-shrink-0">{ts.toLocaleDateString([], { month: 'short', day: 'numeric' })} {ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                  {r.sub_scores && (
+                    <div className="flex items-center gap-2 mt-1">
+                      {dims.map(d => {
+                        const score = r.sub_scores[d.key]?.score
+                        return score != null ? (
+                          <span key={d.key} className="text-[9px] text-gray-500 tabular-nums">
+                            <span className="text-gray-400">{d.short}</span> {score}
+                          </span>
+                        ) : null
+                      })}
+                      {r.has_explanation && <span className="text-[9px] text-savo-purple/60 ml-auto">✦ AI</span>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function CompareReports({ reportA, reportB, onClose }) {
+  if (!reportA || !reportB) return null
+
+  const tsA = new Date(reportA.generated_at)
+  const tsB = new Date(reportB.generated_at)
+  const gcA = GRADE_COLORS[reportA.grade] || GRADE_COLORS.C
+  const gcB = GRADE_COLORS[reportB.grade] || GRADE_COLORS.C
+  const dims = Object.keys(reportA.sub_scores || {})
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Report Comparison</h4>
+        <button onClick={onClose} className="text-[10px] text-gray-400 hover:text-gray-600 font-medium">Close</button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="text-center p-2 rounded-lg bg-gray-50 border border-gray-100">
+          <div className="text-[9px] text-gray-400 uppercase tracking-wider mb-1">Report A</div>
+          <div className={`text-xl font-bold ${gcA.text}`}>{reportA.overall_score}</div>
+          <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold text-white ${gcA.bg}`}>{reportA.grade}</span>
+          <div className="text-[9px] text-gray-400 mt-1 tabular-nums">{tsA.toLocaleDateString()} {tsA.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+        </div>
+        <div className="text-center p-2 rounded-lg bg-gray-50 border border-gray-100">
+          <div className="text-[9px] text-gray-400 uppercase tracking-wider mb-1">Report B</div>
+          <div className={`text-xl font-bold ${gcB.text}`}>{reportB.overall_score}</div>
+          <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold text-white ${gcB.bg}`}>{reportB.grade}</span>
+          <div className="text-[9px] text-gray-400 mt-1 tabular-nums">{tsB.toLocaleDateString()} {tsB.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {dims.map(name => {
+          const dim = DIMENSION_LABELS[name] || { label: name, icon: '' }
+          const scoreA = reportA.sub_scores[name]?.score ?? 0
+          const scoreB = reportB.sub_scores[name]?.score ?? 0
+          const diff = scoreB - scoreA
+          return (
+            <div key={name} className="text-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium">{dim.icon} {dim.label}</span>
+                <div className="flex items-center gap-3 tabular-nums">
+                  <span className="text-gray-500 w-6 text-right">{scoreA}</span>
+                  <span className="text-gray-300">vs</span>
+                  <span className="text-gray-500 w-6">{scoreB}</span>
+                  {diff !== 0 && (
+                    <span className={`text-[10px] font-semibold ${diff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {diff > 0 ? '+' : ''}{diff}
+                    </span>
+                  )}
+                  {diff === 0 && <span className="text-[10px] text-gray-300 w-6">=</span>}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-100">
+        Comparison uses persisted report snapshots, not recalculated data.
+      </div>
+    </div>
+  )
+}
+
 function HotspotCard({ hotspot, active, onClick }) {
   const color = HOTSPOT_COLORS[hotspot.rank - 1] || '#782B90'
   return (
@@ -533,7 +701,7 @@ function HotspotMapOverlay({ data, activeHotspot, onSelectHotspot }) {
   )
 }
 
-function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoading, fitnessError, hotspots, hotspotsLoading, hotspotsError, onFindHotspots, activeHotspot, onSelectHotspot, explanation, explanationLoading, explanationError, explanationUnavailable, onGenerateExplanation }) {
+function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoading, fitnessError, hotspots, hotspotsLoading, hotspotsError, onFindHotspots, activeHotspot, onSelectHotspot, explanation, explanationLoading, explanationError, explanationUnavailable, onGenerateExplanation, history, historyLoading, historyError, onOpenReport, compareMode, compareSelection, onToggleCompare, onCompare, compareData, compareLoading, onCloseCompare }) {
   if (loading) {
     return (
       <div className="p-5">
@@ -648,6 +816,37 @@ function DetailPanel({ detail, loading, onClose, onAnalyze, fitness, fitnessLoad
         onSelectHotspot={onSelectHotspot}
       />
 
+      {compareData && (
+        <CompareReports
+          reportA={compareData.reportA}
+          reportB={compareData.reportB}
+          onClose={onCloseCompare}
+        />
+      )}
+
+      {compareLoading && (
+        <div className="py-3 text-center">
+          <div className="relative w-6 h-6 mx-auto">
+            <div className="w-6 h-6 border-2 border-gray-200 rounded-full" />
+            <div className="w-6 h-6 border-2 border-savo-purple border-t-transparent rounded-full animate-spin absolute inset-0" />
+          </div>
+          <p className="text-[10px] text-gray-400 mt-1.5">Loading comparison...</p>
+        </div>
+      )}
+
+      {fitness && (
+        <ReportHistory
+          reports={history}
+          loading={historyLoading}
+          error={historyError}
+          onSelect={onOpenReport}
+          onCompare={onCompare}
+          compareMode={compareMode}
+          compareSelection={compareSelection}
+          onToggleCompare={onToggleCompare}
+        />
+      )}
+
       {!fitness && !fitnessLoading && (
         <>
           {detail.savomart_stores.length > 0 && (
@@ -692,6 +891,14 @@ export default function AreaExplorer() {
   const [explanationLoading, setExplanationLoading] = useState(false)
   const [explanationError, setExplanationError] = useState(null)
   const [explanationUnavailable, setExplanationUnavailable] = useState(false)
+  const [history, setHistory] = useState(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState(null)
+  const [compareMode, setCompareMode] = useState(false)
+  const [compareSelection, setCompareSelection] = useState([])
+  const [compareData, setCompareData] = useState(null)
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [viewingReport, setViewingReport] = useState(false)
   const geoJsonRef = useRef(null)
 
   useEffect(() => {
@@ -712,6 +919,12 @@ export default function AreaExplorer() {
     setExplanation(null)
     setExplanationError(null)
     setExplanationUnavailable(false)
+    setHistory(null)
+    setHistoryError(null)
+    setCompareMode(false)
+    setCompareSelection([])
+    setCompareData(null)
+    setViewingReport(false)
     try {
       const d = await fetchPincodeDetail(pincode)
       setDetail(d)
@@ -758,6 +971,77 @@ export default function AreaExplorer() {
     }
   }, [selected, fitness])
 
+  const loadHistory = useCallback(async () => {
+    if (!selected) return
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const data = await fetchFitnessHistory(selected)
+      setHistory(data.reports)
+    } catch (err) {
+      setHistoryError(err.response?.data?.detail || err.message)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [selected])
+
+  useEffect(() => {
+    if (fitness && selected) loadHistory()
+  }, [fitness, selected, loadHistory])
+
+  const openSavedReport = useCallback(async (reportId) => {
+    if (!selected) return
+    setFitnessLoading(true)
+    setViewingReport(true)
+    setCompareData(null)
+    setCompareSelection([])
+    try {
+      const report = await fetchSavedReport(selected, reportId)
+      setFitness(report)
+      if (report.explanation) {
+        setExplanation(report.explanation)
+        setExplanationUnavailable(false)
+      } else {
+        setExplanation(null)
+        setExplanationUnavailable(false)
+      }
+    } catch (err) {
+      setFitnessError(err.response?.data?.detail || err.message)
+    } finally {
+      setFitnessLoading(false)
+    }
+  }, [selected])
+
+  const toggleCompareSelection = useCallback((reportIdOrToggle) => {
+    if (typeof reportIdOrToggle === 'string') {
+      setCompareSelection(prev => {
+        if (prev.includes(reportIdOrToggle)) return prev.filter(id => id !== reportIdOrToggle)
+        if (prev.length >= 2) return prev
+        return [...prev, reportIdOrToggle]
+      })
+    } else {
+      setCompareMode(prev => !prev)
+      setCompareSelection([])
+    }
+  }, [])
+
+  const runCompare = useCallback(async () => {
+    if (compareSelection.length !== 2 || !selected) return
+    setCompareLoading(true)
+    try {
+      const [a, b] = await Promise.all([
+        fetchSavedReport(selected, compareSelection[0]),
+        fetchSavedReport(selected, compareSelection[1]),
+      ])
+      setCompareData({ reportA: a, reportB: b })
+    } catch (err) {
+      setHistoryError(err.response?.data?.detail || err.message)
+    } finally {
+      setCompareLoading(false)
+      setCompareSelection([])
+    }
+  }, [compareSelection, selected])
+
   const findHotspots = useCallback(async () => {
     if (!selected) return
     setHotspotsLoading(true)
@@ -784,6 +1068,12 @@ export default function AreaExplorer() {
     setExplanation(null)
     setExplanationError(null)
     setExplanationUnavailable(false)
+    setHistory(null)
+    setHistoryError(null)
+    setCompareMode(false)
+    setCompareSelection([])
+    setCompareData(null)
+    setViewingReport(false)
   }, [])
 
   const onEachFeature = useCallback((feature, layer) => {
@@ -882,6 +1172,17 @@ export default function AreaExplorer() {
               explanationError={explanationError}
               explanationUnavailable={explanationUnavailable}
               onGenerateExplanation={generateExplanation}
+              history={history}
+              historyLoading={historyLoading}
+              historyError={historyError}
+              onOpenReport={openSavedReport}
+              compareMode={compareMode}
+              compareSelection={compareSelection}
+              onToggleCompare={toggleCompareSelection}
+              onCompare={runCompare}
+              compareData={compareData}
+              compareLoading={compareLoading}
+              onCloseCompare={() => setCompareData(null)}
             />
           ) : (
             <div className="p-5 text-center">
