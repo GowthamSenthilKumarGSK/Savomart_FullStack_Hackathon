@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchScoutingTasks, fetchScoutingTask, updateScoutingTask, submitProperty, getEvaluation, runEvaluation } from '../api'
+import { fetchScoutingTasks, fetchScoutingTask, updateScoutingTask, submitProperty, getEvaluation, runEvaluation, requestCatchmentStudy } from '../api'
 
 const USERS = {
   bd_manager: { id: '00000000-0000-0000-0000-000000000001', name: 'Priya Sharma' },
@@ -527,8 +527,10 @@ function EvaluationCard({ propertyId }) {
   )
 }
 
-function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty }) {
+function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty, onTaskRefresh }) {
   const [updating, setUpdating] = useState(false)
+  const [requestingStudy, setRequestingStudy] = useState(false)
+  const [studyError, setStudyError] = useState(null)
   const ss = STATUS_STYLES[task.status] || STATUS_STYLES.assigned
 
   const transitions = task.status === 'assigned'
@@ -543,6 +545,25 @@ function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty }) {
       await onStatusUpdate(task.task_id, newStatus)
     } finally {
       setUpdating(false)
+    }
+  }
+
+  const handleRequestStudy = async () => {
+    if (!task.property?.id) return
+    setRequestingStudy(true)
+    setStudyError(null)
+    try {
+      await requestCatchmentStudy({
+        property_id: task.property.id,
+        requested_by: USERS.bd_manager.id,
+        radius_m: 500,
+      })
+      if (onTaskRefresh) await onTaskRefresh(task.task_id)
+    } catch (err) {
+      const detail = err.response?.data?.detail
+      setStudyError(typeof detail === 'string' ? detail : detail?.message || err.message)
+    } finally {
+      setRequestingStudy(false)
     }
   }
 
@@ -680,6 +701,8 @@ function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty }) {
         </div>
       )}
 
+      {studyError && <div className="p-2 bg-red-50 rounded text-xs text-red-600">{studyError}</div>}
+
       <div className="flex gap-2 pt-2 border-t border-gray-100">
         {task.status === 'in_progress' && (
           <button
@@ -687,6 +710,15 @@ function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty }) {
             className="px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-savo-purple hover:bg-savo-purple-dark transition-colors"
           >
             Submit Property
+          </button>
+        )}
+        {role === 'bd_manager' && task.property && task.property.stage === 'scouted' && (
+          <button
+            onClick={handleRequestStudy}
+            disabled={requestingStudy}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition-colors disabled:opacity-50"
+          >
+            {requestingStudy ? 'Requesting...' : 'Request Catchment Study'}
           </button>
         )}
         {transitions.map(t => (
@@ -817,6 +849,7 @@ export default function ScoutingTasks() {
               role={role}
               onStatusUpdate={handleStatusUpdate}
               onSubmitProperty={() => setShowPropertyForm(true)}
+              onTaskRefresh={selectTask}
             />
           </div>
         )}

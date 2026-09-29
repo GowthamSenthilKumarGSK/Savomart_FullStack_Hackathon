@@ -76,3 +76,18 @@ export async function runEvaluation(propertyId) {
   const { data } = await api.post(`/properties/${propertyId}/evaluate`)
   return data
 }
+
+export async function requestCatchmentStudy(payload) {
+  const { data } = await api.post('/catchment-studies', payload)
+  return data
+}
+
+export async function fetchCatchmentStudies(params = {}) {
+  const { data } = await api.get('/catchment-studies', { params })
+  return data
+}
+
+export async function fetchCatchmentStudy(studyId) {
+  const { data } = await api.get(`/catchment-studies/${studyId}`)
+  return data
+}

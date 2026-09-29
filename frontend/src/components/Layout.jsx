@@ -26,6 +26,7 @@ export default function Layout() {
             {[
               { to: '/areas', label: 'Area Intelligence' },
               { to: '/scouting', label: 'Scouting Tasks' },
+              { to: '/catchment', label: 'Catchment Studies' },
             ].map(link => (
               <NavLink
                 key={link.to}
