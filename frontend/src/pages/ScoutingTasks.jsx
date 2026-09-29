@@ -721,6 +721,16 @@ function TaskDetail({ task, role, onStatusUpdate, onSubmitProperty, onTaskRefres
             {requestingStudy ? 'Requesting...' : 'Request Catchment Study'}
           </button>
         )}
+        {task.property && (
+          <a
+            href={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/properties/${task.property.id}/decision-pack`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 transition-colors inline-block"
+          >
+            Export Decision Pack
+          </a>
+        )}
         {transitions.map(t => (
           <button
             key={t.to}

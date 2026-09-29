@@ -121,3 +121,13 @@ export async function fetchCatchmentInsight(studyId) {
   const { data } = await api.get(`/catchment-studies/${studyId}/insight`)
   return data
 }
+
+export async function fetchAttentionItems(userId, role) {
+  const { data } = await api.get('/attention', { params: { user_id: userId, role } })
+  return data
+}
+
+export async function askSiteScout(question, role = 'bd_manager') {
+  const { data } = await api.post('/ask', { question, role })
+  return data
+}

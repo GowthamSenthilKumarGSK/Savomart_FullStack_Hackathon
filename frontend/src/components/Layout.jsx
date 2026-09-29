@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { Outlet, NavLink } from 'react-router-dom'
+import NeedsAttention from './NeedsAttention'
+import AskSiteScout from './AskSiteScout'
 
 const ROLES = [
   { id: 'bd_manager', label: 'BD Manager', icon: 'M' },
@@ -62,9 +64,11 @@ export default function Layout() {
           </div>
         </div>
       </header>
+      <NeedsAttention role={role} />
       <main className="flex-1 flex flex-col">
         <Outlet context={{ role }} />
       </main>
+      {role === 'bd_manager' && <AskSiteScout />}
     </div>
   )
 }
